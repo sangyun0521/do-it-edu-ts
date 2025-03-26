@@ -30,9 +30,11 @@ Metadata:
           - MySQLSecondary1InstanceIPAddress
           - MySQLSecondary2InstanceIPAddress
       - Label:
-          default: MySQL Router Configuration
+          default: MySQL Configuration
         Parameters:
           - NumRouters
+          - MySQLShellPassword
+          - RootPassword
     ParameterLabels:
       AvailabilityZone:
         default: Availability Zones
@@ -62,10 +64,15 @@ Metadata:
         default: MySQL Secondary2 Instance Private IP
       NumRouters:
         default: Number of MySQL Router Instance
+      MySQLShellPassword:
+        default: Password for MySQL Shell account
+      RootPassword:
+        default: Password for MySQL Root
 Parameters:
   AvailabilityZone:
     Description: The Availability Zone for subnets
     Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-2a
 
   VPCCIDR:
     Description: CIDR block for the Amazon VPC
@@ -107,58 +114,32 @@ Parameters:
   MySQLPrimaryInstanceType:
     Description: Amazon EC2 instance type for MySQL Primary Instance
     Type: String
-    Default: t3.large
+    Default: t2.micro
     AllowedValues:
+      - t2.micro
+      - t2.large
       - t3.large
       - t3.xlarge
       - t3.2xlarge
-      - m5.large
-      - m5.xlarge
-      - m5.2xlarge
-      - m5.4xlarge
-      - m5.8xlarge
-      - m5.12xlarge
-      - m5.16xlarge
-      - m5.24xlarge
-      - r5.large
-      - r5.xlarge
-      - r5.2xlarge
-      - r5.4xlarge
-      - r5.8xlarge
-      - r5.12xlarge
-      - r5.16xlarge
-      - r5.24xlarge
 
   MySQLSecondary1InstanceType:
     Description: Amazon EC2 instance type for MySQL Secondary1 Instance
     Type: String
-    Default: t3.large
+    Default: t2.micro
     AllowedValues:
+      - t2.micro
+      - t2.large
       - t3.large
       - t3.xlarge
       - t3.2xlarge
-      - m5.large
-      - m5.xlarge
-      - m5.2xlarge
-      - m5.4xlarge
-      - m5.8xlarge
-      - m5.12xlarge
-      - m5.16xlarge
-      - m5.24xlarge
-      - r5.large
-      - r5.xlarge
-      - r5.2xlarge
-      - r5.4xlarge
-      - r5.8xlarge
-      - r5.12xlarge
-      - r5.16xlarge
-      - r5.24xlarge
 
-  MaySQLSecondary2InstanceType:
+  MySQLSecondary2InstanceType:
     Description: Amazon EC2 instance type for MySQL Secondary2 Instance
     Type: String
-    Default: t3.large
+    Default: t2.micro
     AllowedValues:
+      - t2.micro
+      - t2.large
       - t3.large
       - t3.xlarge
       - t3.2xlarge
@@ -169,23 +150,50 @@ Parameters:
     Default: t2.micro
     AllowedValues:
       - t2.micro
-      - t3.micro
+      - t2.large
       - t3.small
       - t3.medium
       - t3.large
       - t3.xlarge
       - t3.2xlarge
-      - m5.large
-      - m5.xlarge
-      - m5.2xlarge
-      - m5.4xlarge
-
+      
   NumRouters:
     Description: The number of MySQL Router Instace to create.
     Type: Number
     Default: 1
     AllowedValues:
       - 1
+    
+  MySQLPrimaryInstanceIPAddress:
+    Description: This must be a valid IP address for private subent
+    ConstraintDescription: IP address parameter must be in the form x.x.x.x
+    Type: String
+    Default: 10.0.1.10
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
+  
+  MySQLSecondary1InstanceIPAddress:
+    Description: This must be a valid IP address for private subnet
+    ConstraintDescription: IP address parameter must be in the form x.x.x.x
+    Type: String
+    Default: 10.0.1.11
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
+  
+  MySQLSecondary2InstanceIPAddress:
+    Description: This must be a valid IP address for private subnet
+    ConstraintDescription: IP address parameter must be in the form x.x.x.x
+    Type: String
+    Default: 10.0.1.12
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
+  
+  MySQLShellPassword:
+    Description: password for MySQL shell to access innodb cluster
+    Type: String
+    Default: passwd
+
+  RootPassword:
+    Description: password for MySQL root
+    Type: String
+    Default: passwd
 
 Resources:
 #################### VPC Stack ####################
@@ -394,7 +402,7 @@ Resources:
     CreationPolicy:
       ResourceSignal:
         Count: !Ref NumRouters
-        Timeout: PT60M
+        Timeout: PT15M
       AutoScalingCreationPolicy:
         MinSuccessfulInstancesPercent: 100
     UpdatePolicy:
@@ -403,6 +411,23 @@ Resources:
 
   MySQLRouterLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    DependsOn:
+      - MySQLPrimaryInstance
+      - MySQLSecondary1Instance
+      - MySQLSecondary2Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/env.profile:
+              content: !Join
+                - ''
+                - - |
+                    export MySQL_Router=/usr/local/mysql-router/bin
+                    export MySQL_Shell=/usr/local/mysql-shell/bin
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router:$MySQL_SHELL
+                    export SHELL_URL=https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz
+                    export ROUTER_URL=https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
     Properties:
       LaunchTemplateName: MySQLRouterLaunchTemplate
       LaunchTemplateData:
@@ -427,29 +452,52 @@ Resources:
             Fn::Join:
               - ''
               - - "#!/bin/bash -xe\n"
-                - "export MySQL_Router=/usr/local/mysql-router-bin\n"
-                - "export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router\n"
-                - "export SHELL_URL=https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz\n"
-                - "export ROUTER_URL=https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-                - "apt update -y\n"
-                - "apt install -y curl tar\n"
+                -  '/opt/aws/bin/cfn-init -v '
+                - '         --stack '
+                - Ref: 'AWS::StackName'
+                - '         --resource MySQLRouterLaunchTemplate '
+                - '         --region '
+                - Ref: 'AWS::Region'
+                - "\n"
+                - "source /etc/cfn/env.profile\n"
                 - "cd /usr/local\n"
                 - "curl -LO $SHELL_URL\n"
                 - "tar -xf mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz -C /usr/local\n"
                 - "rm -rf /usr/local/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz\n"
                 - "mv mysql-shell-8.4.4-linux-glibc2.28-x86-64bit mysql-shell\n"
-                - "useradd -r -s /usr/sbin/nologin mysql\n"
+                - "groupadd mysql\n"
+                - "useradd -g mysql -M -s /bin/false mysql\n"
                 - "chown -R mysql mysql-shell\n"
                 - "cd /usr/local\n"
                 - "curl -LO $ROUTER_URL\n"
                 - "tar -xf mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
                 - "mv mysql-router-8.4.4-linux-glibc2.28-x86_64 mysql-router\n"
                 - "rm -rf /usr/local/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-                - "chown -R mysql mysql-router\n"              
+                - "chown -R mysql mysql-router\n"
+                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'dba.configureInstance();'<<EOF\n"
+                - "y\n"
+                - "y\n"
+                - "EOF\n"
+                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.11:3306 --js -e 'dba.configureInstance();'<<EOF\n"
+                - "y\n"
+                - "y\n"
+                - "EOF\n"
+                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.12:3306 --js -e 'dba.configureInstance();'<<EOF\n"
+                - "y\n"
+                - "y\n"
+                - "EOF\n"
+                - "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e<<EOF\n"
+                - "cluster = dba.createCluster('cls');\n"
+                - "cluster.addInstance('shell@10.0.1.11:3306', {"
+                - "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
+                - "cluster.addInstance('shell@10.0.1.12:3306', {"
+                - "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
+                - "cluster.status()\n"
+                - "EOF\n"
                 - '/opt/aws/bin/cfn-signal -e $? '
                 - '         --stack '
                 - Ref: 'AWS::StackName'
-                - '         --resource DB1Instance '
+                - '         --resource MySQLRouterAutoScalingGroup '
                 - '         --region '
                 - Ref: 'AWS::Region'
                 - "\n"
@@ -470,13 +518,345 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref MySQLRouterAccessCIDR
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref MySQLRouterAccessCIDR
+
+# MySQLPrimaryInstance
+  MySQLPrimaryInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/env.profile:
+              content: !Join
+                - ''
+                - - |    
+                    export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                    export MySQL=/usr/local/mysql/bin
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
+            /etc/my.cnf:
+              content: !Join
+                - ''
+                - - |
+                    [client]
+                    port    = 3306
+                    socket  = /tmp/mysql.sock
+                    [mysqld]
+                    user      = mysql
+                    port      = 3306
+                    basedir   = /usr/local/mysql
+                    datadir   = /mysql/data
+                    log-error = /mysql/log/mysql_error.log
+    Properties:
+      InstanceType: !Ref MySQLPrimaryInstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId : !FindInMap
+        - ImageMap
+        - Ubuntu24.04
+        - ImageId
+      KeyName: !Ref KeyPairName
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "#!/bin/bash -xe\n"
+              - '/opt/aws/bin/cfn-init -v '
+              - '         --stack '
+              - Ref: 'AWS::StackName'
+              - '         --resource MySQLPrimaryInstance '
+              - '         --region '
+              - Ref: 'AWS::Region'
+              - "\n"
+              - "source /etc/cfn/env.profile\n"
+              - "cd /usr/local\n"
+              - "curl -LO $MySQL_URL\n"
+              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
+              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
+              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
+              - "groupadd mysql\n"
+              - "useradd -g mysql -M -s /bin/false mysql\n"
+              - "mkdir -p /mysql/data\n"
+              - "mkdir -p /mysql/log\n"
+              - "chown -R mysql mysql\n"
+              - "chown -R mysql /mysql\n"
+              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
+              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
+              - "SHELL_IP=$(aws ec2 describe-instances "
+              - "--filters 'Name=tag:Name,Values=MySQL Router' "
+              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
+              - "--output text)\n"
+              - "mysql -u root<<EOF\n"
+              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - "EOF\n"
+              - "ps -ef | grep mysqld\n"
+              - "/opt/aws/bin/cfn-signal "
+              - "--resource MySQLPrimaryInstance --stack ${AWS::StackName} --region ${AWS::Region}\n"
+
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref MySQLPrimaryInstanceSecurityGroup
+          SubnetId: !Ref PrivateSubnet
+          DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          PrivateIpAddresses:
+            - PrivateIpAddress: !Ref MySQLPrimaryInstanceIPAddress
+              Primary: true
+      Tags:
+        - Key: Name
+          Value: MySQLPrimaryInstance
+
+  MySQLPrimaryInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: MySQL Primary Instance Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+
+# MySQL Secondary1 Instance  
+  MySQLSecondary1Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/env.profile:
+              content: !Join
+                - ''
+                - - |    
+                    export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                    export MySQL=/usr/local/mysql/bin
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL                    
+            /etc/my.cnf:
+              content: !Join
+                - ''
+                - - |
+                    [client]
+                    port    = 3306
+                    socket  = /tmp/mysql.sock
+                    [mysqld]
+                    user      = mysql
+                    port      = 3306
+                    basedir   = /usr/local/mysql
+                    datadir   = /mysql/data
+                    log-error = /mysql/log/mysql_error.log 
+    Properties:
+      InstanceType: !Ref MySQLSecondary1InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId : !FindInMap
+        - ImageMap
+        - Ubuntu24.04
+        - ImageId
+      KeyName: !Ref KeyPairName
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "#!/bin/bash -xe\n"
+              -  '/opt/aws/bin/cfn-init -v '
+              - '         --stack '
+              - Ref: 'AWS::StackName'
+              - '         --resource MySQLSecondary1Instance '
+              - '         --region '
+              - Ref: 'AWS::Region'
+              - "\n"
+              - "source /etc/cfn/env.profile\n"
+              - "cd /usr/local\n"
+              - "curl -LO $MySQL_URL\n"
+              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
+              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
+              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
+              - "groupadd mysql\n"
+              - "useradd -g mysql -M -s /bin/false mysql\n"
+              - "mkdir -p /mysql/data\n"
+              - "mkdir -p /mysql/log\n"
+              - "chown -R mysql mysql\n"
+              - "chown -R mysql /mysql\n"
+              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
+              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
+              - "SHELL_IP=$(aws ec2 describe-instances "
+              - "--filters 'Name=tag:Name,Values=MySQL Router' "
+              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
+              - "--output text)\n"
+              - "mysql -u root<<EOF\n"
+              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - "EOF\n"
+              - "ps -ef | grep mysqld\n"
+              - "/opt/aws/bin/cfn-signal "
+              - "--resource MySQLSecondary1Instance --stack ${AWS::StackName} --region ${AWS::Region}\n"
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref MySQLSecondary1InstanceSecurityGroup
+          SubnetId: !Ref PrivateSubnet
+          DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          PrivateIpAddresses:
+            - PrivateIpAddress: !Ref MySQLSecondary1InstanceIPAddress
+              Primary: true
+      Tags:
+        - Key: Name
+          Value: MySQLSecondary1Instance
+
+  MySQLSecondary1InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: MySQL Secondary1 Instance Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+
+# MySQL Secondary2 Instance  
+  MySQLSecondary2Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/env.profile:
+              content: !Join
+                - ''
+                - - |    
+                    export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                    export MySQL=/usr/local/mysql/bin
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
+                    
+            /etc/my.cnf:
+              content: !Join
+                - ''
+                - - |
+                    [client]
+                    port    = 3306
+                    socket  = /tmp/mysql.sock
+                    [mysqld]
+                    user      = mysql
+                    port      = 3306
+                    basedir   = /usr/local/mysql
+                    datadir   = /mysql/data
+                    log-error = /mysql/log/mysql_error.log 
+    Properties:
+      InstanceType: !Ref MySQLSecondary2InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId : !FindInMap
+        - ImageMap
+        - Ubuntu24.04
+        - ImageId
+      KeyName: !Ref KeyPairName
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "#!/bin/bash -xe\n"
+              -  '/opt/aws/bin/cfn-init -v '
+              - '         --stack '
+              - Ref: 'AWS::StackName'
+              - '         --resource MySQLSecondary2Instance '
+              - '         --region '
+              - Ref: 'AWS::Region'
+              - "\n"
+              - "source /etc/cfn/env.profile\n"
+              - "cd /usr/local\n"
+              - "curl -LO $MySQL_URL\n"
+              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
+              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
+              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
+              - "groupadd mysql\n"
+              - "useradd -g mysql -M -s /bin/false mysql\n"
+              - "mkdir -p /mysql/data\n"
+              - "mkdir -p /mysql/log\n"
+              - "chown -R mysql mysql\n"
+              - "chown -R mysql /mysql\n"
+              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
+              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
+              - "SHELL_IP=$(aws ec2 describe-instances "
+              - "--filters 'Name=tag:Name,Values=MySQL Router' "
+              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
+              - "--output text)\n"
+              - "mysql -u root<<EOF\n"
+              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - "EOF\n"
+              - "ps -ef | grep mysqld\n"
+              - "/opt/aws/bin/cfn-signal "
+              - "--resource MySQLSecondary2Instance --stack ${AWS::StackName} --region ${AWS::Region}\n"
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref MySQLSecondary2InstanceSecurityGroup
+          SubnetId: !Ref PrivateSubnet
+          DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          PrivateIpAddresses:
+            - PrivateIpAddress: !Ref MySQLSecondary2InstanceIPAddress
+              Primary: true
+      Tags:
+        - Key: Name
+          Value: MySQLSecondary2Instance
+
+  MySQLSecondary2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: MySQL Secondary2 Instance Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
 
 Mappings:
   ImageMap:
     Ubuntu24.04:
-      ImageId: ami-0d5bb3742db8fc264
+      ImageId: ami-062cddb9d94dcf95d
