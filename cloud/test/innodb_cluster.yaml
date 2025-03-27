@@ -23,12 +23,13 @@ Metadata:
         Parameters:
           - KeyPairName
           - MySQLRouterInstanceType
-          - MySQLPrimaryInstanceType
+          - MySQLInstance1Type
           - MySQLSecondary1InstnaceType
           - MySQLSecondary2InstnaceType
-          - MySQLPrimaryInstanceIPAddress
-          - MySQLSecondary1InstanceIPAddress
-          - MySQLSecondary2InstanceIPAddress
+          - MySQLRouterInstanceIPAddress
+          - MySQLInstance1IPAddress
+          - MySQLInstance2IPAddress
+          - MySQLInstance3IPAddress
       - Label:
           default: MySQL Configuration
         Parameters:
@@ -50,17 +51,19 @@ Metadata:
         default: VPC Tenancy
       KeyPairName:
         default: Key Pair Name
-      MySQLPrimaryInstanceType:
+      MySQLInstance1Type:
         default: MySQL Primary Instance Type
-      MySQLSecondary1InstanceType:
+      MySQLInstance2Type:
         default: MySQL Secondary1 Instance Type
-      MySQLSecondary2InstanceType:
+      MySQLInstance3Type:
         default: MySQL Secondary2 Instance Type
-      MySQLPrimaryInstanceIPAddress:
+      MySQLRouterInstanceIPAddress:
+        default: MySQL Router Instance Private IP
+      MySQLInstance1IPAddress:
         default: MySQL Primary Instance Private IP
-      MySQLSecondary1InstanceIPAddress:
+      MySQLInstance2IPAddress:
         default: MySQL Secondary1 Instance Private IP
-      MySQLSecondary2InstanceIPAddress:
+      MySQLInstance3IPAddress:
         default: MySQL Secondary2 Instance Private IP
       NumRouters:
         default: Number of MySQL Router Instance
@@ -111,7 +114,7 @@ Parameters:
     ConstraintDescription: must be the name of an existing EC2 KeyPair
     Type: AWS::EC2::KeyPair::KeyName
 
-  MySQLPrimaryInstanceType:
+  MySQLInstance1Type:
     Description: Amazon EC2 instance type for MySQL Primary Instance
     Type: String
     Default: t2.micro
@@ -122,7 +125,7 @@ Parameters:
       - t3.xlarge
       - t3.2xlarge
 
-  MySQLSecondary1InstanceType:
+  MySQLInstance2Type:
     Description: Amazon EC2 instance type for MySQL Secondary1 Instance
     Type: String
     Default: t2.micro
@@ -133,7 +136,7 @@ Parameters:
       - t3.xlarge
       - t3.2xlarge
 
-  MySQLSecondary2InstanceType:
+  MySQLInstance3Type:
     Description: Amazon EC2 instance type for MySQL Secondary2 Instance
     Type: String
     Default: t2.micro
@@ -163,22 +166,29 @@ Parameters:
     Default: 1
     AllowedValues:
       - 1
-    
-  MySQLPrimaryInstanceIPAddress:
+ 
+  MySQLRouterInstanceIPAddress:
+    Description: This must be a valid IP address for public subnet
+    ConstraintDescription: IP address parameter must be in the form x.x.x.x
+    Type: String
+    Default: 10.0.0.10
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
+
+  MySQLInstance1IPAddress:
     Description: This must be a valid IP address for private subent
     ConstraintDescription: IP address parameter must be in the form x.x.x.x
     Type: String
     Default: 10.0.1.10
     AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
   
-  MySQLSecondary1InstanceIPAddress:
+  MySQLInstance2IPAddress:
     Description: This must be a valid IP address for private subnet
     ConstraintDescription: IP address parameter must be in the form x.x.x.x
     Type: String
     Default: 10.0.1.11
     AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
   
-  MySQLSecondary2InstanceIPAddress:
+  MySQLInstance3IPAddress:
     Description: This must be a valid IP address for private subnet
     ConstraintDescription: IP address parameter must be in the form x.x.x.x
     Type: String
@@ -384,14 +394,32 @@ Resources:
       Path: /
 
 # MySQL Router
+  MySQLRouterENI:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      Description: Fixed public IP ENI for ASG
+      GroupSet:
+        - !Ref MySQLRouterSecurityGroup 
+      PrivateIpAddress: !Ref MySQLRouterInstanceIPAddress
+
+  MySQLRouterPublicEIP:
+    Type: AWS::EC2::EIP
+
+  MySQLRouterPublicEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt MySQLRouterPublicEIP.AllocationId
+      NetworkInterfaceId: !Ref MySQLRouterENI
+
   MySQLRouterAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref MySQLRouterLaunchTemplate
         Version: !GetAtt MySQLRouterLaunchTemplate.LatestVersionNumber
-      VPCZoneIdentifier:
-        - !Ref PublicSubnet
+      AvailabilityZones:
+        - !Ref 'AvailabilityZone'
       MinSize: !Ref NumRouters
       MaxSize: !Ref NumRouters
       DesiredCapacity: !Ref NumRouters
@@ -410,11 +438,11 @@ Resources:
         WillReplace: true
 
   MySQLRouterLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
     DependsOn:
-      - MySQLPrimaryInstance
-      - MySQLSecondary1Instance
-      - MySQLSecondary2Instance
+      - MySQLInstance1
+      - MySQLInstance2
+      - MySQLInstance3
+    Type: AWS::EC2::LaunchTemplate
     Metadata:
       AWS::CloudFormation::Init:
         config:
@@ -425,7 +453,7 @@ Resources:
                 - - |
                     export MySQL_Router=/usr/local/mysql-router/bin
                     export MySQL_Shell=/usr/local/mysql-shell/bin
-                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router:$MySQL_SHELL
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router:$MySQL_Shell
                     export SHELL_URL=https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz
                     export ROUTER_URL=https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
     Properties:
@@ -442,17 +470,14 @@ Resources:
           - ImageId
         KeyName: !Ref KeyPairName
         NetworkInterfaces:
-          - DeviceIndex: 0
-            AssociatePublicIpAddress: true
-            Groups:
-            - !Ref MySQLRouterSecurityGroup
-            SubnetId: !Ref PublicSubnet
+          - NetworkInterfaceId: !Ref MySQLRouterENI
+            DeviceIndex: 0
         UserData:
           Fn::Base64:
             Fn::Join:
               - ''
               - - "#!/bin/bash -xe\n"
-                -  '/opt/aws/bin/cfn-init -v '
+                - '/opt/aws/bin/cfn-init -v '
                 - '         --stack '
                 - Ref: 'AWS::StackName'
                 - '         --resource MySQLRouterLaunchTemplate '
@@ -486,12 +511,12 @@ Resources:
                 - "y\n"
                 - "y\n"
                 - "EOF\n"
-                - "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e<<EOF\n"
-                - "cluster = dba.createCluster('cls');\n"
+                - "sleep 5\n"
+                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'cluster = dba.createCluster(\"cls\");'<<EOF\n"
                 - "cluster.addInstance('shell@10.0.1.11:3306', {"
-                - "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
+                - !Sub "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
                 - "cluster.addInstance('shell@10.0.1.12:3306', {"
-                - "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
+                - !Sub "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
                 - "cluster.status()\n"
                 - "EOF\n"
                 - '/opt/aws/bin/cfn-signal -e $? '
@@ -501,13 +526,6 @@ Resources:
                 - '         --region '
                 - Ref: 'AWS::Region'
                 - "\n"
-
-  MySQLInstanceLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        MetadataOptions:
-          HttpTokens: optional
   
   MySQLRouterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -524,8 +542,8 @@ Resources:
           ToPort: 80
           CidrIp: !Ref MySQLRouterAccessCIDR
 
-# MySQLPrimaryInstance
-  MySQLPrimaryInstance:
+# MySQLInstance1
+  MySQLInstance1:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
@@ -555,7 +573,7 @@ Resources:
                     datadir   = /mysql/data
                     log-error = /mysql/log/mysql_error.log
     Properties:
-      InstanceType: !Ref MySQLPrimaryInstanceType
+      InstanceType: !Ref MySQLInstance1Type
       IamInstanceProfile: !Ref InstanceProfile
       ImageId : !FindInMap
         - ImageMap
@@ -570,7 +588,7 @@ Resources:
               - '/opt/aws/bin/cfn-init -v '
               - '         --stack '
               - Ref: 'AWS::StackName'
-              - '         --resource MySQLPrimaryInstance '
+              - '         --resource MySQLInstance1 '
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
@@ -588,39 +606,34 @@ Resources:
               - "chown -R mysql /mysql\n"
               - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
               - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "SHELL_IP=$(aws ec2 describe-instances "
-              - "--filters 'Name=tag:Name,Values=MySQL Router' "
-              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
-              - "--output text)\n"
+              - "sleep 5\n"
               - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
               - "EOF\n"
               - "ps -ef | grep mysqld\n"
               - "/opt/aws/bin/cfn-signal "
-              - "--resource MySQLPrimaryInstance --stack ${AWS::StackName} --region ${AWS::Region}\n"
-
+              - !Sub "--resource MySQLInstance1 --stack ${AWS::StackName} --region ${AWS::Region}\n"
       NetworkInterfaces:
         - GroupSet:
-            - !Ref MySQLPrimaryInstanceSecurityGroup
+            - !Ref MySQLInstance1SecurityGroup
           SubnetId: !Ref PrivateSubnet
           DeviceIndex: "0"
           AssociatePublicIpAddress: false
           PrivateIpAddresses:
-            - PrivateIpAddress: !Ref MySQLPrimaryInstanceIPAddress
+            - PrivateIpAddress: !Ref MySQLInstance1IPAddress
               Primary: true
       Tags:
         - Key: Name
-          Value: MySQLPrimaryInstance
+          Value: MySQLInstance1
 
-  MySQLPrimaryInstanceSecurityGroup:
+  MySQLInstance1SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
@@ -636,7 +649,7 @@ Resources:
           SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
 
 # MySQL Secondary1 Instance  
-  MySQLSecondary1Instance:
+  MySQLInstance2:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
@@ -666,7 +679,7 @@ Resources:
                     datadir   = /mysql/data
                     log-error = /mysql/log/mysql_error.log 
     Properties:
-      InstanceType: !Ref MySQLSecondary1InstanceType
+      InstanceType: !Ref MySQLInstance2Type
       IamInstanceProfile: !Ref InstanceProfile
       ImageId : !FindInMap
         - ImageMap
@@ -681,7 +694,7 @@ Resources:
               -  '/opt/aws/bin/cfn-init -v '
               - '         --stack '
               - Ref: 'AWS::StackName'
-              - '         --resource MySQLSecondary1Instance '
+              - '         --resource MySQLInstance2 '
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
@@ -699,38 +712,34 @@ Resources:
               - "chown -R mysql /mysql\n"
               - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
               - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "SHELL_IP=$(aws ec2 describe-instances "
-              - "--filters 'Name=tag:Name,Values=MySQL Router' "
-              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
-              - "--output text)\n"
+              - "sleep 5\n"
               - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
               - "EOF\n"
               - "ps -ef | grep mysqld\n"
               - "/opt/aws/bin/cfn-signal "
-              - "--resource MySQLSecondary1Instance --stack ${AWS::StackName} --region ${AWS::Region}\n"
+              - !Sub "--resource MySQLInstance2 --stack ${AWS::StackName} --region ${AWS::Region}\n"
       NetworkInterfaces:
         - GroupSet:
-            - !Ref MySQLSecondary1InstanceSecurityGroup
+            - !Ref MySQLInstance2SecurityGroup
           SubnetId: !Ref PrivateSubnet
           DeviceIndex: "0"
           AssociatePublicIpAddress: false
           PrivateIpAddresses:
-            - PrivateIpAddress: !Ref MySQLSecondary1InstanceIPAddress
+            - PrivateIpAddress: !Ref MySQLInstance2IPAddress
               Primary: true
       Tags:
         - Key: Name
-          Value: MySQLSecondary1Instance
+          Value: MySQLInstance2
 
-  MySQLSecondary1InstanceSecurityGroup:
+  MySQLInstance2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
@@ -746,7 +755,7 @@ Resources:
           SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
 
 # MySQL Secondary2 Instance  
-  MySQLSecondary2Instance:
+  MySQLInstance3:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
@@ -761,8 +770,7 @@ Resources:
                 - - |    
                     export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
                     export MySQL=/usr/local/mysql/bin
-                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
-                    
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL    
             /etc/my.cnf:
               content: !Join
                 - ''
@@ -777,7 +785,7 @@ Resources:
                     datadir   = /mysql/data
                     log-error = /mysql/log/mysql_error.log 
     Properties:
-      InstanceType: !Ref MySQLSecondary2InstanceType
+      InstanceType: !Ref MySQLInstance3Type
       IamInstanceProfile: !Ref InstanceProfile
       ImageId : !FindInMap
         - ImageMap
@@ -792,7 +800,7 @@ Resources:
               -  '/opt/aws/bin/cfn-init -v '
               - '         --stack '
               - Ref: 'AWS::StackName'
-              - '         --resource MySQLSecondary2Instance '
+              - '         --resource MySQLInstance3 '
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
@@ -810,38 +818,34 @@ Resources:
               - "chown -R mysql /mysql\n"
               - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
               - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "SHELL_IP=$(aws ec2 describe-instances "
-              - "--filters 'Name=tag:Name,Values=MySQL Router' "
-              - "--query 'Reservations[*].Instance[*].PrivateIpAddress' "
-              - "--output text)\n"
+              - "sleep 5\n"
               - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'$SHELL_IP' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLPrimaryInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary1InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLSecondary2InstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - "GRANT ALL ON *.* TO 'shell'@'$SHELL_IP' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLPrimaryInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary1InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "GRANT ALL ON *.* TO 'shell'@'${MySQLSecondary2InstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "ALTER USER ‘root’@’localhost’ IDENTIFIED BY '${RootPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
+              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
               - "EOF\n"
               - "ps -ef | grep mysqld\n"
               - "/opt/aws/bin/cfn-signal "
-              - "--resource MySQLSecondary2Instance --stack ${AWS::StackName} --region ${AWS::Region}\n"
+              - !Sub "--resource MySQLInstance3 --stack ${AWS::StackName} --region ${AWS::Region}\n"
       NetworkInterfaces:
         - GroupSet:
-            - !Ref MySQLSecondary2InstanceSecurityGroup
+            - !Ref MySQLInstance3SecurityGroup
           SubnetId: !Ref PrivateSubnet
           DeviceIndex: "0"
           AssociatePublicIpAddress: false
           PrivateIpAddresses:
-            - PrivateIpAddress: !Ref MySQLSecondary2InstanceIPAddress
+            - PrivateIpAddress: !Ref MySQLInstance3IPAddress
               Primary: true
       Tags:
         - Key: Name
-          Value: MySQLSecondary2Instance
+          Value: MySQLInstance3
 
-  MySQLSecondary2InstanceSecurityGroup:
+  MySQLInstance3SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
