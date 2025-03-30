@@ -23,10 +23,12 @@ Metadata:
         Parameters:
           - KeyPairName
           - MySQLRouterInstanceType
+          - MySQLSingleInstanceType
           - MySQLInstance1Type
           - MySQLSecondary1InstnaceType
           - MySQLSecondary2InstnaceType
           - MySQLRouterInstanceIPAddress
+          - MySQLSingleInstanceIPAddress
           - MySQLInstance1IPAddress
           - MySQLInstance2IPAddress
           - MySQLInstance3IPAddress
@@ -51,6 +53,8 @@ Metadata:
         default: VPC Tenancy
       KeyPairName:
         default: Key Pair Name
+      MySQLSingleInstanceType:
+        default: MySQL Single Instance Type
       MySQLInstance1Type:
         default: MySQL Primary Instance Type
       MySQLInstance2Type:
@@ -59,6 +63,8 @@ Metadata:
         default: MySQL Secondary2 Instance Type
       MySQLRouterInstanceIPAddress:
         default: MySQL Router Instance Private IP
+      MySQLSingleInstanceIPAddress:
+        default: MySQL Single Instance Private IP
       MySQLInstance1IPAddress:
         default: MySQL Primary Instance Private IP
       MySQLInstance2IPAddress:
@@ -71,6 +77,7 @@ Metadata:
         default: Password for MySQL Shell account
       RootPassword:
         default: Password for MySQL Root
+
 Parameters:
   AvailabilityZone:
     Description: The Availability Zone for subnets
@@ -113,14 +120,29 @@ Parameters:
     Description: Name of an existing EC2 Keypair to enable SSH access to the Instance
     ConstraintDescription: must be the name of an existing EC2 KeyPair
     Type: AWS::EC2::KeyPair::KeyName
-
+  
+  MySQLSingleInstanceType:
+    Description: Amazon EC2 instance type for MySQL Single Instance
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+  
   MySQLInstance1Type:
     Description: Amazon EC2 instance type for MySQL Primary Instance
     Type: String
-    Default: t2.micro
+    Default: t3.small
     AllowedValues:
-      - t2.micro
-      - t2.large
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
       - t3.large
       - t3.xlarge
       - t3.2xlarge
@@ -128,10 +150,12 @@ Parameters:
   MySQLInstance2Type:
     Description: Amazon EC2 instance type for MySQL Secondary1 Instance
     Type: String
-    Default: t2.micro
+    Default: t3.small
     AllowedValues:
-      - t2.micro
-      - t2.large
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
       - t3.large
       - t3.xlarge
       - t3.2xlarge
@@ -139,10 +163,12 @@ Parameters:
   MySQLInstance3Type:
     Description: Amazon EC2 instance type for MySQL Secondary2 Instance
     Type: String
-    Default: t2.micro
+    Default: t3.small
     AllowedValues:
-      - t2.micro
-      - t2.large
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
       - t3.large
       - t3.xlarge
       - t3.2xlarge
@@ -150,10 +176,10 @@ Parameters:
   MySQLRouterInstanceType:
     Description: Amazon EC2 instance type for MySQL Router Instance
     Type: String
-    Default: t2.micro
+    Default: t3.micro
     AllowedValues:
-      - t2.micro
-      - t2.large
+      - t3.nano
+      - t3.micro
       - t3.small
       - t3.medium
       - t3.large
@@ -172,6 +198,13 @@ Parameters:
     ConstraintDescription: IP address parameter must be in the form x.x.x.x
     Type: String
     Default: 10.0.0.10
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
+
+  MySQLSingleInstanceIPAddress:
+    Description: This must be a valid IP address for private subnet
+    ConstraintDescription: IP address parameter must be in the form x.x.x.x
+    Type: String
+    Default: 10.0.1.20
     AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$
 
   MySQLInstance1IPAddress:
@@ -456,6 +489,38 @@ Resources:
                     export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router:$MySQL_Shell
                     export SHELL_URL=https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz
                     export ROUTER_URL=https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
+            /etc/cfn/install_sysbench.sh:
+              content: !Join 
+                - ''
+                - - | 
+                    # install prerequisites
+                    sudo dnf install -y pip
+                    sudo dnf install -y mariadb105-devel gcc python3-devel
+                    pip install mysqlclient
+                    sudo dnf -y install make automake libtool pkgconfig libaio-devel git 
+                    # install sysbench
+                    git clone https://github.com/akopytov/sysbench.git
+                    cd sysbench
+
+                    # build 
+                    ./autogen.sh
+                    ./configure
+                    make -j
+                    make install
+            /etc/cfn/install_router.sh:
+              content: !Sub |
+                # install router
+                cd /usr/local
+                curl -LO https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                tar -xf mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                mv mysql-router-8.4.4-linux-glibc2.28-x86_64 mysql-router
+                rm -rf /usr/local/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                chown -R mysql mysql-router
+
+                # configure router
+                export PATH=$PATH:/usr/local/mysql-router/bin
+                mysqlrouter --bootstrap shell@${MySQLInstance1IPAddress}:3306 --user=mysql --directory=/etc/mysqlrouter
+                mysqlrouter --config /etc/mysqlrouter/mysqlrouter.conf
     Properties:
       LaunchTemplateName: MySQLRouterLaunchTemplate
       LaunchTemplateData:
@@ -542,6 +607,110 @@ Resources:
           ToPort: 80
           CidrIp: !Ref MySQLRouterAccessCIDR
 
+# MySQLSingleInstance
+  MySQLSingleInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/cfn/env.profile:
+              content: !Join
+                - ''
+                - - |    
+                    export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                    export MySQL=/usr/local/mysql/bin
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
+            /etc/my.cnf:
+              content: !Sub |
+                [client]
+                port    = 3306
+                socket  = /tmp/mysql.sock
+                [mysqld]
+                user      = mysql
+                port      = 3306
+                basedir   = /usr/local/mysql
+                datadir   = /mysql/data
+                log-error = /mysql/log/mysql_error.log
+                
+                skip-name-resolve
+                report_host = ${MySQLSingleInstanceIPAddress}
+
+                innodb_buffer_pool_size = 1200M
+                innodb_log_buffer_size = 32M
+                
+                innodb_buffer_pool_instances = 1
+
+                innodb_flush_log_at_trx_commit = 1
+                innodb_flush_method = O_DIRECT 
+    Properties:
+      InstanceType: !Ref MySQLSingleInstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId : !FindInMap
+        - ImageMap
+        - Ubuntu24.04
+        - ImageId
+      KeyName: !Ref KeyPairName
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "#!/bin/bash -xe\n"
+              - '/opt/aws/bin/cfn-init -v '
+              - '         --stack '
+              - Ref: 'AWS::StackName'
+              - '         --resource MySQLSingleInstance '
+              - '         --region '
+              - Ref: 'AWS::Region'
+              - "\n"
+              - "source /etc/cfn/env.profile\n"
+              - "cd /usr/local\n"
+              - "curl -LO $MySQL_URL\n"
+              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
+              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
+              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
+              - "groupadd mysql\n"
+              - "useradd -g mysql -M -s /bin/false mysql\n"
+              - "mkdir -p /mysql/data\n"
+              - "mkdir -p /mysql/log\n"
+              - "chown -R mysql mysql\n"
+              - "chown -R mysql /mysql\n"
+              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
+              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
+              - "sleep 5\n"
+              - "mysql -u root<<EOF\n"
+              - !Sub "CREATE USER 'mysql'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
+              - !Sub "GRANT ALL ON *.* TO 'mysql'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
+              - "EOF\n"
+              - "ps -ef | grep mysqld\n"
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref MySQLSingleInstanceSecurityGroup
+          SubnetId: !Ref PrivateSubnet
+          DeviceIndex: "0"
+          AssociatePublicIpAddress: false
+          PrivateIpAddresses:
+            - PrivateIpAddress: !Ref MySQLSingleInstanceIPAddress
+              Primary: true
+      Tags:
+        - Key: Name
+          Value: MySQLSingleInstance
+
+  MySQLSingleInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: MySQL Single Instance Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
+
 # MySQLInstance1
   MySQLInstance1:
     Type: AWS::EC2::Instance
@@ -572,6 +741,16 @@ Resources:
                     basedir   = /usr/local/mysql
                     datadir   = /mysql/data
                     log-error = /mysql/log/mysql_error.log
+                    skip-name-resolve
+                    report_host = ${MySQLInstance1IPAddress}
+                    
+                    innodb_buffer_pool_size = 1200M
+                    innodb_log_buffer_size = 32M
+                    
+                    innodb_buffer_pool_instances = 1
+
+                    innodb_flush_log_at_trx_commit = 1
+                    innodb_flush_method = O_DIRECT
     Properties:
       InstanceType: !Ref MySQLInstance1Type
       IamInstanceProfile: !Ref InstanceProfile
@@ -648,7 +827,7 @@ Resources:
           ToPort: 3306
           SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
 
-# MySQL Secondary1 Instance  
+# MySQL Instance2
   MySQLInstance2:
     Type: AWS::EC2::Instance
     CreationPolicy:
@@ -677,7 +856,17 @@ Resources:
                     port      = 3306
                     basedir   = /usr/local/mysql
                     datadir   = /mysql/data
-                    log-error = /mysql/log/mysql_error.log 
+                    log-error = /mysql/log/mysql_error.log
+                    skip-name-resolve
+                    report-host = ${MySQLInstance2IPAddress}
+
+                    innodb_buffer_pool_size = 1200M
+                    innodb_log_buffer_size = 32M
+                    
+                    innodb_buffer_pool_instances = 1
+
+                    innodb_flush_log_at_trx_commit = 1
+                    innodb_flush_method = O_DIRECT
     Properties:
       InstanceType: !Ref MySQLInstance2Type
       IamInstanceProfile: !Ref InstanceProfile
@@ -754,7 +943,7 @@ Resources:
           ToPort: 3306
           SourceSecurityGroupId: !GetAtt MySQLRouterSecurityGroup.GroupId
 
-# MySQL Secondary2 Instance  
+# MySQL Instance3  
   MySQLInstance3:
     Type: AWS::EC2::Instance
     CreationPolicy:
@@ -783,7 +972,17 @@ Resources:
                     port      = 3306
                     basedir   = /usr/local/mysql
                     datadir   = /mysql/data
-                    log-error = /mysql/log/mysql_error.log 
+                    log-error = /mysql/log/mysql_error.log
+                    skip-name-resolve
+                    report_host = ${MySQLInstance3IPAddress}
+
+                    innodb_buffer_pool_size = 1200M
+                    innodb_log_buffer_size = 32M
+                    
+                    innodb_buffer_pool_instances = 1
+
+                    innodb_flush_log_at_trx_commit = 1
+                    innodb_flush_method = O_DIRECT 
     Properties:
       InstanceType: !Ref MySQLInstance3Type
       IamInstanceProfile: !Ref InstanceProfile
