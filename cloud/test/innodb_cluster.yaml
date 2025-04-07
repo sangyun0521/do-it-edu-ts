@@ -489,10 +489,53 @@ Resources:
                     export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL_Router:$MySQL_Shell
                     export SHELL_URL=https://dev.mysql.com/get/Downloads/MySQL-Shell/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz
                     export ROUTER_URL=https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
-            /etc/cfn/install_sysbench.sh:
+            /etc/cfn/download_router_and_shell.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $SHELL_URL
+                tar -xf mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz -C /usr/local
+                rm -rf /usr/local/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz
+                mv mysql-shell-8.4.4-linux-glibc2.28-x86-64bit mysql-shell
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                chown -R mysql mysql-shell
+                cd /usr/local
+                curl -LO $ROUTER_URL
+                tar -xf mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                mv mysql-router-8.4.4-linux-glibc2.28-x86_64 mysql-router
+                rm -rf /usr/local/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                chown -R mysql mysql-router
+
+            /etc/cfn/configure_cluster.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'dba.configureInstance();'<<EOF
+                y
+                y
+                EOF
+                mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.11:3306 --js -e 'dba.configureInstance();'<<EOF
+                y
+                y
+                EOF
+                mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.12:3306 --js -e 'dba.configureInstance();'<<EOF
+                y
+                y
+                EOF
+                sleep 5
+                mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'cluster = dba.createCluster("cls");'<<EOF
+                cluster.addInstance('shell@10.0.1.11:3306', {password: '${MySQLShellPassword}', recoveryMethod: 'clone'})
+                cluster.addInstance('shell@10.0.1.12:3306', {password: '${MySQLShellPassword}', recoveryMethod: 'clone'})
+                cluster.status()
+                EOF
+
+            /etc/cfn/download_sysbench.sh:
               content: !Join 
                 - ''
                 - - | 
+                    #!/bin/bash
                     # install prerequisites
                     sudo dnf install -y pip
                     sudo dnf install -y mariadb105-devel gcc python3-devel
@@ -501,26 +544,75 @@ Resources:
                     # install sysbench
                     git clone https://github.com/akopytov/sysbench.git
                     cd sysbench
-
                     # build 
                     ./autogen.sh
                     ./configure
                     make -j
                     make install
-            /etc/cfn/install_router.sh:
-              content: !Sub |
-                # install router
-                cd /usr/local
-                curl -LO https://dev.mysql.com/get/Downloads/MySQL-Router/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
-                tar -xf mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
-                mv mysql-router-8.4.4-linux-glibc2.28-x86_64 mysql-router
-                rm -rf /usr/local/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz
-                chown -R mysql mysql-router
 
-                # configure router
-                export PATH=$PATH:/usr/local/mysql-router/bin
-                mysqlrouter --bootstrap shell@${MySQLInstance1IPAddress}:3306 --user=mysql --directory=/etc/mysqlrouter
-                mysqlrouter --config /etc/mysqlrouter/mysqlrouter.conf
+            /etc/cfn/download_mysql.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $MySQL_URL
+                tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                mkdir -p /mysql/data
+                mkdir -p /mysql/log
+                chown -R mysql mysql
+                chown -R mysql /mysql
+
+            /etc/cfn/configure_mysql_single.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'mysql'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'mysql'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
+
+            /etc/cfn/configure_mysql_instance.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
+                /opt/aws/bin/cfn-signal --resource ${AWS::StackName} --stack ${AWS::StackName} --region ${AWS::Region}
+
+            /etc/cfn/configure_mysql_router.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                # Router 설정 디렉토리 생성
+                mkdir -p /mysql
+                mkdir -p /mysql/router
+                chown -R mysql:mysql /mysql
+                mysqlrouter --bootstrap shell@${MySQLInstance1IPAddress}:3306 -d /mysql/router --user=mysql<<EOF
+                ${MySQLShellPassword}
+                EOF
+                cd /mysql/router
+                ./start.sh
+                
     Properties:
       LaunchTemplateName: MySQLRouterLaunchTemplate
       LaunchTemplateData:
@@ -549,41 +641,14 @@ Resources:
                 - '         --region '
                 - Ref: 'AWS::Region'
                 - "\n"
-                - "source /etc/cfn/env.profile\n"
-                - "cd /usr/local\n"
-                - "curl -LO $SHELL_URL\n"
-                - "tar -xf mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz -C /usr/local\n"
-                - "rm -rf /usr/local/mysql-shell-8.4.4-linux-glibc2.28-x86-64bit.tar.gz\n"
-                - "mv mysql-shell-8.4.4-linux-glibc2.28-x86-64bit mysql-shell\n"
-                - "groupadd mysql\n"
-                - "useradd -g mysql -M -s /bin/false mysql\n"
-                - "chown -R mysql mysql-shell\n"
-                - "cd /usr/local\n"
-                - "curl -LO $ROUTER_URL\n"
-                - "tar -xf mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
-                - "mv mysql-router-8.4.4-linux-glibc2.28-x86_64 mysql-router\n"
-                - "rm -rf /usr/local/mysql-router-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-                - "chown -R mysql mysql-router\n"
-                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'dba.configureInstance();'<<EOF\n"
-                - "y\n"
-                - "y\n"
-                - "EOF\n"
-                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.11:3306 --js -e 'dba.configureInstance();'<<EOF\n"
-                - "y\n"
-                - "y\n"
-                - "EOF\n"
-                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.12:3306 --js -e 'dba.configureInstance();'<<EOF\n"
-                - "y\n"
-                - "y\n"
-                - "EOF\n"
-                - "sleep 5\n"
-                - !Sub "mysqlsh --uri shell:${MySQLShellPassword}@10.0.1.10:3306 --js -e 'cluster = dba.createCluster(\"cls\");'<<EOF\n"
-                - "cluster.addInstance('shell@10.0.1.11:3306', {"
-                - !Sub "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
-                - "cluster.addInstance('shell@10.0.1.12:3306', {"
-                - !Sub "password: '${MySQLShellPassword}', recoveryMethod: 'clone'})\n"
-                - "cluster.status()\n"
-                - "EOF\n"
+                - "chmod +x /etc/cfn/download_router_and_shell.sh\n"
+                - "chmod +x /etc/cfn/configure_cluster.sh\n"
+                - "chmod +x /etc/cfn/download_sysbench.sh\n"
+                - "chmod +x /etc/cfn/configure_mysql_router.sh\n"
+                - "/etc/cfn/download_router_and_shell.sh\n"
+                - "/etc/cfn/configure_cluster.sh\n"
+                - "/etc/cfn/download_sysbench.sh\n"
+                - "/etc/cfn/configure_mysql_router.sh\n"
                 - '/opt/aws/bin/cfn-signal -e $? '
                 - '         --stack '
                 - Ref: 'AWS::StackName'
@@ -605,6 +670,26 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
+          CidrIp: !Ref MySQLRouterAccessCIDR
+        - IpProtocol: tcp
+          FromPort: 6446
+          ToPort: 6446
+          CidrIp: !Ref MySQLRouterAccessCIDR
+        - IpProtocol: tcp
+          FromPort: 6447
+          ToPort: 6447
+          CidrIp: !Ref MySQLRouterAccessCIDR
+        - IpProtocol: tcp
+          FromPort: 6450
+          ToPort: 6450
+          CidrIp: !Ref MySQLRouterAccessCIDR
+        - IpProtocol: tcp
+          FromPort: 6448
+          ToPort: 6448
+          CidrIp: !Ref MySQLRouterAccessCIDR
+        - IpProtocol: tcp
+          FromPort: 6449
+          ToPort: 6449
           CidrIp: !Ref MySQLRouterAccessCIDR
 
 # MySQLSingleInstance
@@ -642,7 +727,34 @@ Resources:
                 innodb_buffer_pool_instances = 1
 
                 innodb_flush_log_at_trx_commit = 1
-                innodb_flush_method = O_DIRECT 
+                innodb_flush_method = O_DIRECT
+            /etc/cfn/download_mysql.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $MySQL_URL
+                tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                mkdir -p /mysql/data
+                mkdir -p /mysql/log
+                chown -R mysql mysql
+                chown -R mysql /mysql
+            /etc/cfn/configure_mysql_single.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'mysql'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'mysql'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
     Properties:
       InstanceType: !Ref MySQLSingleInstanceType
       IamInstanceProfile: !Ref InstanceProfile
@@ -663,26 +775,10 @@ Resources:
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
-              - "source /etc/cfn/env.profile\n"
-              - "cd /usr/local\n"
-              - "curl -LO $MySQL_URL\n"
-              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
-              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
-              - "groupadd mysql\n"
-              - "useradd -g mysql -M -s /bin/false mysql\n"
-              - "mkdir -p /mysql/data\n"
-              - "mkdir -p /mysql/log\n"
-              - "chown -R mysql mysql\n"
-              - "chown -R mysql /mysql\n"
-              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
-              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "sleep 5\n"
-              - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'mysql'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "GRANT ALL ON *.* TO 'mysql'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - "EOF\n"
-              - "ps -ef | grep mysqld\n"
+              - "chmod +x /etc/cfn/download_mysql.sh\n"
+              - "chmod +x /etc/cfn/configure_mysql_single.sh\n"
+              - "/etc/cfn/download_mysql.sh\n"
+              - "/etc/cfn/configure_mysql_single.sh\n"
       NetworkInterfaces:
         - GroupSet:
             - !Ref MySQLSingleInstanceSecurityGroup
@@ -729,28 +825,60 @@ Resources:
                     export MySQL=/usr/local/mysql/bin
                     export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
             /etc/my.cnf:
-              content: !Join
-                - ''
-                - - |
-                    [client]
-                    port    = 3306
-                    socket  = /tmp/mysql.sock
-                    [mysqld]
-                    user      = mysql
-                    port      = 3306
-                    basedir   = /usr/local/mysql
-                    datadir   = /mysql/data
-                    log-error = /mysql/log/mysql_error.log
-                    skip-name-resolve
-                    report_host = ${MySQLInstance1IPAddress}
-                    
-                    innodb_buffer_pool_size = 1200M
-                    innodb_log_buffer_size = 32M
-                    
-                    innodb_buffer_pool_instances = 1
+              content: !Sub |
+                [client]
+                port    = 3306
+                socket  = /tmp/mysql.sock
+                [mysqld]
+                user      = mysql
+                port      = 3306
+                basedir   = /usr/local/mysql
+                datadir   = /mysql/data
+                log-error = /mysql/log/mysql_error.log
+                skip-name-resolve
+                report_host = ${MySQLInstance1IPAddress}
+                
+                innodb_buffer_pool_size = 1200M
+                innodb_log_buffer_size = 32M
+                
+                innodb_buffer_pool_instances = 1
 
-                    innodb_flush_log_at_trx_commit = 1
-                    innodb_flush_method = O_DIRECT
+                innodb_flush_log_at_trx_commit = 1
+                innodb_flush_method = O_DIRECT
+            /etc/cfn/download_mysql.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $MySQL_URL
+                tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                mkdir -p /mysql/data
+                mkdir -p /mysql/log
+                chown -R mysql mysql
+                chown -R mysql /mysql
+            /etc/cfn/configure_mysql_instance.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
+                /opt/aws/bin/cfn-signal --resource MySQLInstance1 --stack ${AWS::StackName} --region ${AWS::Region}
     Properties:
       InstanceType: !Ref MySQLInstance1Type
       IamInstanceProfile: !Ref InstanceProfile
@@ -771,34 +899,10 @@ Resources:
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
-              - "source /etc/cfn/env.profile\n"
-              - "cd /usr/local\n"
-              - "curl -LO $MySQL_URL\n"
-              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
-              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
-              - "groupadd mysql\n"
-              - "useradd -g mysql -M -s /bin/false mysql\n"
-              - "mkdir -p /mysql/data\n"
-              - "mkdir -p /mysql/log\n"
-              - "chown -R mysql mysql\n"
-              - "chown -R mysql /mysql\n"
-              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
-              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "sleep 5\n"
-              - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
-              - "EOF\n"
-              - "ps -ef | grep mysqld\n"
-              - "/opt/aws/bin/cfn-signal "
-              - !Sub "--resource MySQLInstance1 --stack ${AWS::StackName} --region ${AWS::Region}\n"
+              - "chmod +x /etc/cfn/download_mysql.sh\n"
+              - "chmod +x /etc/cfn/configure_mysql_instance.sh\n"
+              - "/etc/cfn/download_mysql.sh\n"
+              - "/etc/cfn/configure_mysql_instance.sh\n"
       NetworkInterfaces:
         - GroupSet:
             - !Ref MySQLInstance1SecurityGroup
@@ -843,30 +947,62 @@ Resources:
                 - - |    
                     export MySQL_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
                     export MySQL=/usr/local/mysql/bin
-                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL                    
+                    export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL
             /etc/my.cnf:
-              content: !Join
-                - ''
-                - - |
-                    [client]
-                    port    = 3306
-                    socket  = /tmp/mysql.sock
-                    [mysqld]
-                    user      = mysql
-                    port      = 3306
-                    basedir   = /usr/local/mysql
-                    datadir   = /mysql/data
-                    log-error = /mysql/log/mysql_error.log
-                    skip-name-resolve
-                    report-host = ${MySQLInstance2IPAddress}
+              content: !Sub |
+                [client]
+                port    = 3306
+                socket  = /tmp/mysql.sock
+                [mysqld]
+                user      = mysql
+                port      = 3306
+                basedir   = /usr/local/mysql
+                datadir   = /mysql/data
+                log-error = /mysql/log/mysql_error.log
+                skip-name-resolve
+                report_host = ${MySQLInstance2IPAddress}
 
-                    innodb_buffer_pool_size = 1200M
-                    innodb_log_buffer_size = 32M
-                    
-                    innodb_buffer_pool_instances = 1
+                innodb_buffer_pool_size = 1200M
+                innodb_log_buffer_size = 32M
+                
+                innodb_buffer_pool_instances = 1
 
-                    innodb_flush_log_at_trx_commit = 1
-                    innodb_flush_method = O_DIRECT
+                innodb_flush_log_at_trx_commit = 1
+                innodb_flush_method = O_DIRECT
+            /etc/cfn/download_mysql.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $MySQL_URL
+                tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                mkdir -p /mysql/data
+                mkdir -p /mysql/log
+                chown -R mysql mysql
+                chown -R mysql /mysql
+            /etc/cfn/configure_mysql_instance.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
+                /opt/aws/bin/cfn-signal --resource MySQLInstance2 --stack ${AWS::StackName} --region ${AWS::Region}
     Properties:
       InstanceType: !Ref MySQLInstance2Type
       IamInstanceProfile: !Ref InstanceProfile
@@ -887,34 +1023,10 @@ Resources:
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
-              - "source /etc/cfn/env.profile\n"
-              - "cd /usr/local\n"
-              - "curl -LO $MySQL_URL\n"
-              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
-              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
-              - "groupadd mysql\n"
-              - "useradd -g mysql -M -s /bin/false mysql\n"
-              - "mkdir -p /mysql/data\n"
-              - "mkdir -p /mysql/log\n"
-              - "chown -R mysql mysql\n"
-              - "chown -R mysql /mysql\n"
-              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
-              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "sleep 5\n"
-              - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
-              - "EOF\n"
-              - "ps -ef | grep mysqld\n"
-              - "/opt/aws/bin/cfn-signal "
-              - !Sub "--resource MySQLInstance2 --stack ${AWS::StackName} --region ${AWS::Region}\n"
+              - "chmod +x /etc/cfn/download_mysql.sh\n"
+              - "chmod +x /etc/cfn/configure_mysql_instance.sh\n"
+              - "/etc/cfn/download_mysql.sh\n"
+              - "/etc/cfn/configure_mysql_instance.sh\n"
       NetworkInterfaces:
         - GroupSet:
             - !Ref MySQLInstance2SecurityGroup
@@ -961,28 +1073,60 @@ Resources:
                     export MySQL=/usr/local/mysql/bin
                     export PATH=$PATH:$HOME/.local/bin:$HOME/bin:$MySQL    
             /etc/my.cnf:
-              content: !Join
-                - ''
-                - - |
-                    [client]
-                    port    = 3306
-                    socket  = /tmp/mysql.sock
-                    [mysqld]
-                    user      = mysql
-                    port      = 3306
-                    basedir   = /usr/local/mysql
-                    datadir   = /mysql/data
-                    log-error = /mysql/log/mysql_error.log
-                    skip-name-resolve
-                    report_host = ${MySQLInstance3IPAddress}
+              content: !Sub |
+                [client]
+                port    = 3306
+                socket  = /tmp/mysql.sock
+                [mysqld]
+                user      = mysql
+                port      = 3306
+                basedir   = /usr/local/mysql
+                datadir   = /mysql/data
+                log-error = /mysql/log/mysql_error.log
+                skip-name-resolve
+                report_host = ${MySQLInstance3IPAddress}
 
-                    innodb_buffer_pool_size = 1200M
-                    innodb_log_buffer_size = 32M
-                    
-                    innodb_buffer_pool_instances = 1
+                innodb_buffer_pool_size = 1200M
+                innodb_log_buffer_size = 32M
+                
+                innodb_buffer_pool_instances = 1
 
-                    innodb_flush_log_at_trx_commit = 1
-                    innodb_flush_method = O_DIRECT 
+                innodb_flush_log_at_trx_commit = 1
+                innodb_flush_method = O_DIRECT
+            /etc/cfn/download_mysql.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                cd /usr/local
+                curl -LO $MySQL_URL
+                tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local
+                rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz
+                mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql
+                groupadd mysql
+                useradd -g mysql -M -s /bin/false mysql
+                mkdir -p /mysql/data
+                mkdir -p /mysql/log
+                chown -R mysql mysql
+                chown -R mysql /mysql
+            /etc/cfn/configure_mysql_instance.sh:
+              content: !Sub |
+                #!/bin/bash
+                source /etc/cfn/env.profile
+                mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure
+                nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &
+                sleep 5
+                mysql -u root<<EOF
+                CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';
+                GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;
+                GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;
+                EOF
+                ps -ef | grep mysqld
+                /opt/aws/bin/cfn-signal --resource MySQLInstance3 --stack ${AWS::StackName} --region ${AWS::Region}
     Properties:
       InstanceType: !Ref MySQLInstance3Type
       IamInstanceProfile: !Ref InstanceProfile
@@ -996,41 +1140,17 @@ Resources:
           Fn::Join:
             - ""
             - - "#!/bin/bash -xe\n"
-              -  '/opt/aws/bin/cfn-init -v '
+              - '/opt/aws/bin/cfn-init -v '
               - '         --stack '
               - Ref: 'AWS::StackName'
               - '         --resource MySQLInstance3 '
               - '         --region '
               - Ref: 'AWS::Region'
               - "\n"
-              - "source /etc/cfn/env.profile\n"
-              - "cd /usr/local\n"
-              - "curl -LO $MySQL_URL\n"
-              - "tar -xf mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz -C /usr/local\n"
-              - "rm -rf /usr/local/mysql-8.4.4-linux-glibc2.28-x86_64.tar.xz\n"
-              - "mv mysql-8.4.4-linux-glibc2.28-x86_64 mysql\n"
-              - "groupadd mysql\n"
-              - "useradd -g mysql -M -s /bin/false mysql\n"
-              - "mkdir -p /mysql/data\n"
-              - "mkdir -p /mysql/log\n"
-              - "chown -R mysql mysql\n"
-              - "chown -R mysql /mysql\n"
-              - "mysqld --defaults-file=/etc/my.cnf --user=mysql --initialize-insecure\n"
-              - "nohup mysqld_safe --defaults-file=/etc/my.cnf > /var/log/mysqld_safe.log 2>&1 &\n"
-              - "sleep 5\n"
-              - "mysql -u root<<EOF\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLRouterInstanceIPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance1IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance2IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "CREATE USER 'shell'@'${MySQLInstance3IPAddress}' IDENTIFIED BY '${MySQLShellPassword}';\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLRouterInstanceIPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance1IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance2IPAddress}' WITH GRANT OPTION;\n"
-              - !Sub "GRANT ALL ON *.* TO 'shell'@'${MySQLInstance3IPAddress}' WITH GRANT OPTION;\n"
-              - "EOF\n"
-              - "ps -ef | grep mysqld\n"
-              - "/opt/aws/bin/cfn-signal "
-              - !Sub "--resource MySQLInstance3 --stack ${AWS::StackName} --region ${AWS::Region}\n"
+              - "chmod +x /etc/cfn/download_mysql.sh\n"
+              - "chmod +x /etc/cfn/configure_mysql_instance.sh\n"
+              - "/etc/cfn/download_mysql.sh\n"
+              - "/etc/cfn/configure_mysql_instance.sh\n"
       NetworkInterfaces:
         - GroupSet:
             - !Ref MySQLInstance3SecurityGroup
